@@ -1,0 +1,23 @@
+{
+  "name": "Data and Politics - Lab 2",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12",
+  "features": {
+    "ghcr.io/jsburckhardt/devcontainer-features/uv:1": {}
+  },
+  "postCreateCommand": "uv sync",
+  "postStartCommand": "nohup bash -c 'uv run marimo edit notebooks/lab02/lab02.py --host 0.0.0.0 --port 2718 --no-token &'",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "marimo-team.vscode-marimo"
+      ]
+    }
+  },
+  "forwardPorts": [2718],
+  "portsAttributes": {
+    "2718": {
+      "label": "Marimo",
+      "onAutoForward": "openPreview"
+    }
+  }
+}
