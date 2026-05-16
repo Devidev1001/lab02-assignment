@@ -10,7 +10,7 @@
 
 import marimo
 
-__generated_with = "0.19.11"
+__generated_with = "0.23.6"
 app = marimo.App(width="medium")
 
 
@@ -207,7 +207,7 @@ def _(mo):
 
 
 @app.cell
-def _():
+def _(pl, wi):
     # TODO: Compute the efficiency gap for 2012 using the wasted votes formula
     # 1. Filter to 2012 contested races
     # 2. For each district, compute wasted votes:
@@ -216,7 +216,66 @@ def _():
     # 3. Sum wasted Dem and wasted Rep across all districts
     # 4. EG = (total_wasted_dem - total_wasted_rep) / total_votes
 
-    eg_2012 = None  # Replace with your computation
+
+
+    eg_2012 = (
+        wi
+        .filter(
+            (pl.col("year") == 2012) &
+            (~pl.col("uncontested"))
+        )
+    )
+
+    # 2. Compute total votes and wasted votes for each district
+    eg_2012 = (
+        eg_2012
+        .with_columns([
+            (pl.col("dem_votes") + pl.col("rep_votes")).alias("total_votes"),
+
+            # Wasted Democratic votes
+            pl.when(pl.col("winner") == "Dem")
+            .then(
+                # votes beyond the amount needed to win
+                pl.col("dem_votes") - (
+                    (pl.col("dem_votes") + pl.col("rep_votes")) // 2 + 1
+                )
+            )
+            .otherwise(
+                # all losing votes are wasted
+                pl.col("dem_votes")
+            )
+            .alias("wasted_dem"),
+
+            # Wasted Republican votes
+            pl.when(pl.col("winner") == "Rep")
+            .then(
+                pl.col("rep_votes") - (
+                    (pl.col("dem_votes") + pl.col("rep_votes")) // 2 + 1
+                )
+            )
+            .otherwise(
+                pl.col("rep_votes")
+            )
+            .alias("wasted_rep")
+        ])
+    )
+
+    # 3. Sum wasted votes across districts
+    summary = eg_2012.select([
+        pl.sum("wasted_dem").alias("total_wasted_dem"),
+        pl.sum("wasted_rep").alias("total_wasted_rep"),
+        pl.sum("total_votes").alias("total_votes")
+    ])
+
+    # 4. Compute efficiency gap
+    summary = summary.with_columns([
+        (
+            (pl.col("total_wasted_dem") - pl.col("total_wasted_rep"))
+            / pl.col("total_votes")
+        ).alias("efficiency_gap")
+    ])
+
+    print(summary)
     return
 
 
@@ -233,13 +292,46 @@ def _(mo):
 
 
 @app.cell
-def _():
+def _(alt, pl, wi):
     # TODO: Create a histogram of Democratic vote share for 2012 contested races
     # Use alt.Chart with mark_bar, color by whether dem_voteshare > 0.5
     # Add a vertical dashed line at 0.5
 
-    pass
-    return
+    df = (
+        wi
+        .filter(
+            (pl.col("year") == 2012) &
+            (~pl.col("uncontested"))
+        )
+        .with_columns(
+            (pl.col("dem_voteshare") > 0.5).alias("dem_majority")
+        )
+    )
+
+    # 2. Convert to Altair-friendly format (no pandas)
+    data = df.to_dicts()
+
+    # 3. Histogram
+    hist = (
+        alt.Chart(alt.Data(values=data))
+        .mark_bar()
+        .encode(
+            x=alt.X("dem_voteshare:Q", bin=alt.Bin(maxbins=30), title="Democratic vote share"),
+            y=alt.Y("count():Q", title="Number of districts"),
+            color=alt.Color("dem_majority:N", title="Dem > 0.5")
+        )
+    )
+
+    # 4. Vertical dashed line at 0.5
+    rule = alt.Chart(alt.Data(values=[{}])).mark_rule(
+        strokeDash=[6, 4],
+        color="black"
+    ).encode(
+        x=alt.datum(0.5)
+    )
+
+    hist + rule
+    return (data,)
 
 
 @app.cell
@@ -267,12 +359,74 @@ def _(mo):
 
 
 @app.cell
-def _():
+def _(alt, np, pl, wi):
     # TODO: Construct a seats-votes curve using uniform swing on 2012 contested races
     # Plot it with a proportional representation reference line and the actual 2012 result point
 
-    pass
-    return
+    df1 = (
+        wi
+        .filter(
+            (pl.col("year") == 2012) &
+            (~pl.col("uncontested"))
+        )
+        .select("dem_voteshare")
+    )
+
+    shares = df1["dem_voteshare"].to_numpy()
+
+    # 2. Swing values
+    deltas = np.arange(-0.20, 0.205, 0.005)
+
+    results = []
+
+    for d in deltas:
+        shifted = shares + d
+
+        seat_share = (shifted > 0.5).mean()
+        vote_share = shifted.mean()
+
+        results.append({
+            "delta": d,
+            "vote_share": vote_share,
+            "seat_share": seat_share
+        })
+
+    curve_df = pl.DataFrame(results).to_dicts()
+
+    # 3. Build main curve
+    base = alt.Chart(alt.Data(values=curve_df)).mark_line().encode(
+        x=alt.X("vote_share:Q", title="Democratic Vote Share"),
+        y=alt.Y("seat_share:Q", title="Democratic Seat Share")
+    )
+
+    # 4. Proportional representation line (y = x)
+    pr_line = alt.Chart(alt.Data(values=[
+        {"x": 0, "y": 0},
+        {"x": 1, "y": 1}
+    ])).mark_line(
+        strokeDash=[6, 4],
+        color="black"
+    ).encode(
+        x="x:Q",
+        y="y:Q"
+    )
+
+    # 5. Actual 2012 result
+    actual_vote = shares.mean()
+    actual_seat = (shares > 0.5).mean()
+
+    actual_point = alt.Chart(alt.Data(values=[{
+        "vote_share": actual_vote,
+        "seat_share": actual_seat
+    }])).mark_point(size=100, color="red").encode(
+        x="vote_share:Q",
+        y="seat_share:Q"
+    )
+
+    # 6. Combine
+    (pr_line + base + actual_point)
+
+    return (base,)
 
 
 @app.cell
@@ -284,7 +438,7 @@ def _(mo):
 
     *Based on your calculations and visualizations, does Wisconsin's 2012 efficiency gap seem unusually large? What does the distribution of vote shares across districts tell you about how the map translates votes into seats?*
 
-    **Your answer:**
+    **Your answer:** Yes, it seems like the map was drawn in order to maximize the wasted democratic votes. There are many narro democratic losses and very few demoratic wins, and the low proportion of democratic seats relative to their vote share reflects this.
     """)
     return
 
@@ -397,10 +551,28 @@ def _(np, pl, wi):
     # and collect results into a list of dicts. Then create eg_by_year DataFrame.
     _rows = []
     for _year in sorted(wi["year"].unique().to_list()):
-        pass  # Replace with your code
+       df_year = (
+            wi
+            .filter(
+                (pl.col("year") == _year) &
+                (~pl.col("uncontested"))
+            )
+            .with_columns(
+                (pl.col("dem_votes") + pl.col("rep_votes")).alias("total_votes")
+            )
+        )
+
+        # skip empty years just in case
+
+    eg = compute_eg(df_year)
+
+    _rows.append({
+            "year": _year,
+            "efficiency_gap": eg
+        })
 
     eg_by_year = pl.DataFrame(_rows)
-    return compute_eg, eg_by_year
+    return (eg_by_year,)
 
 
 @app.cell
@@ -414,10 +586,54 @@ def _(mo):
 
 
 @app.cell
-def _():
+def _(alt, base, data, eg_by_year):
     # TODO: Plot EG over time with Jackman's .07 threshold lines
+    # Convert only final summary
+    _data = eg_by_year.to_dicts()
 
-    pass
+    _base = alt.Chart(alt.Data(values=data)).encode(
+        x=alt.X("year:O", title="Year"),
+        y=alt.Y("efficiency_gap:Q", title="Efficiency Gap")
+    )
+
+    line = _base.mark_line()
+
+    points = base.mark_point(size=80)
+
+    zero_line = alt.Chart(alt.Data(values=[{"y": 0}])).mark_rule(
+        color="black"
+    ).encode(
+        y="y:Q"
+    )
+
+    threshold_pos = alt.Chart(alt.Data(values=[{"y": 0.07, "label": "+0.07 threshold"}])).mark_rule(
+        strokeDash=[6, 4],
+        color="red"
+    ).encode(
+        y="y:Q"
+    )
+
+    threshold_neg = alt.Chart(alt.Data(values=[{"y": -0.07, "label": "-0.07 threshold"}])).mark_rule(
+        strokeDash=[6, 4],
+        color="red"
+    ).encode(
+        y="y:Q"
+    )
+
+    threshold_labels = alt.Chart(alt.Data(values=[
+        {"year": eg_by_year["year"].min(), "efficiency_gap": 0.07, "text": "+0.07 threshold"},
+        {"year": eg_by_year["year"].min(), "efficiency_gap": -0.07, "text": "−0.07 threshold"},
+    ])).mark_text(
+        align="left",
+        dx=5,
+        color="red"
+    ).encode(
+        x="year:O",
+        y="efficiency_gap:Q",
+        text="text:N"
+    )
+
+    (line + points + zero_line + threshold_pos + threshold_neg + threshold_labels)
     return
 
 
@@ -430,7 +646,7 @@ def _(mo):
 
     *Goedert argues that a large EG in one election doesn't tell you much because it's unstable over time. Based on your analysis of multiple Wisconsin elections, is the efficiency gap under Act 43 stable or unstable? Does this support or undermine Goedert's general critique?*
 
-    **Your answer:**
+    **Your answer:** The efficiency gap is stable, which undermine's Goedert's critique.
     """)
     return
 
@@ -456,12 +672,37 @@ def _(mo):
 
 
 @app.cell
-def _():
+def _(alt, data, pl, wi):
     # TODO: Create overlaid histograms of presidential Dem vote share for 2012
     # Separate by assembly winner (D vs R)
     # This shows geographic clustering independent of uncontested race issues
 
-    pass
+    # 1. Filter to 2012 only (you can keep uncontested if desired;
+    # here we keep all since you're explicitly studying geography)
+    df_ = wi.filter(pl.col("year") == 2012)
+
+    # 2. Ensure winner is clean categorical
+    df_ = df_.with_columns(
+        pl.col("winner").cast(pl.Utf8)
+    )
+
+    data_ = df_.to_dicts()
+
+    # 3. Base chart
+    base_ = alt.Chart(alt.Data(values=data))
+
+    # 4. Overlaid histograms
+    hist_ = base_.mark_bar(opacity=0.5).encode(
+        x=alt.X(
+            "pres_dem_voteshare:Q",
+            bin=alt.Bin(maxbins=30),
+            title="Presidential Democratic Vote Share"
+        ),
+        y=alt.Y("count():Q", title="Count of districts"),
+        color=alt.Color("winner:N", title="Assembly Winner")
+    )
+
+    hist_
     return
 
 
@@ -474,7 +715,7 @@ def _(mo):
 
     *Trende argues that the geographic clustering of Democratic voters in cities naturally creates a pro-Republican efficiency gap, even under neutral map-drawing. Based on your analysis of the presidential vote share distributions, how much of the efficiency gap could be attributed to geography vs. intentional map manipulation? What evidence would help you distinguish between the two?*
 
-    **Your answer:**
+    **Your answer:** The evidence suggests that geography does play a role, but it doesn't seem to fully account for the efficiency gap.
     """)
     return
 
@@ -514,14 +755,64 @@ def _(mo):
 
 
 @app.cell
-def _():
+def _(np, pl, wi):
     # TODO: Impute uncontested race vote shares using presidential vote share
     # For uncontested races, replace dem_voteshare with pres_dem_voteshare
     # Recompute dem_votes and rep_votes from imputed voteshare * total_votes
     # Compute EG (wasted votes formula) for each year using all 99 districts
     # Compare with contested-only results
 
-    pass
+    def compute_eg_full(df):
+        _dem_v = df["dem_votes"].to_numpy()
+        _rep_v = df["rep_votes"].to_numpy()
+        _tot_v = df["total_votes"].to_numpy()
+
+        _votes_to_win = np.floor(_tot_v / 2).astype(int) + 1
+
+        _w_dem = np.where(_dem_v > _rep_v, _dem_v - _votes_to_win, _dem_v)
+        _w_rep = np.where(_rep_v > _dem_v, _rep_v - _votes_to_win, _rep_v)
+
+        return float((_w_dem.sum() - _w_rep.sum()) / _tot_v.sum())
+
+
+    rows = []
+
+    for year in sorted(wi["year"].unique().to_list()):
+
+        df_years = wi.filter(pl.col("year") == year)
+
+        # 1. Impute dem voteshare for uncontested races
+        df_years = df_years.with_columns(
+            pl.when(pl.col("uncontested"))
+            .then(pl.col("pres_dem_voteshare"))
+            .otherwise(pl.col("dem_voteshare"))
+            .alias("dem_voteshare_imputed")
+        )
+
+        # 2. Recompute votes from imputed share
+        df_years = df_years.with_columns([
+            (pl.col("dem_voteshare_imputed")).alias("d_share"),
+            (1 - pl.col("dem_voteshare_imputed")).alias("r_share"),
+        ]).with_columns([
+            (pl.col("d_share") * (pl.col("dem_votes") + pl.col("rep_votes"))).round(0).cast(pl.Int64).alias("dem_votes_new"),
+            (pl.col("r_share") * (pl.col("dem_votes") + pl.col("rep_votes"))).round(0).cast(pl.Int64).alias("rep_votes_new"),
+        ]).with_columns(
+            (pl.col("dem_votes_new") + pl.col("rep_votes_new")).alias("total_votes")
+        ).rename({
+            "dem_votes_new": "dem_votes_new",
+            "rep_votes_new": "rep_votes_new"
+        })
+
+        eg_null = compute_eg_full(df_years)
+
+        rows.append({
+            "year": year,
+            "eg_imputed": eg_null
+        })
+
+    eg_imputed_by_year = pl.DataFrame(rows)
+
+    eg_imputed_by_year
     return
 
 
@@ -559,7 +850,9 @@ def _(mo):
 
     *Write a 2-3 paragraph synthesis memo with your ruling and reasoning.*
 
-    **Your answer:**
+    **Your answer:** Wisconsin's map was an intentional partisan gerrymander. The large efficiency gas shows that the map is biased towards republicans, and the evidence doesn't support the idea that this is due merely to the geography of the state. Additionally, the efficiency gap is stable and consistent, dispelling Goedert's notion that efficiency gap is "\"Highly unstable."
+
+    Courts should use quantitative metrics as part of their adjudication of gerrymandering claims, but it shouldn't be the entire basis for a ruling. EG is an eeffective measurement, but it's always possible that there will be factors that EG doesn't identify. Geographic bias is one, but there could also be other contributors such as compliance with the voting rights act or other legislation. EG is reliable, but it shouldn't be the sole determiner of rulings
     """)
     return
 
